@@ -83,12 +83,44 @@ extern "C"{
 #define MAX_THREAD_COUNT            128
 #define MAX_PASSTHRU_SIZE           1024 * 64
 
+typedef struct _HOOK_ACL_
+{
+	ULONG                   Count;
+	BOOL                    IsExclusive;
+	ULONG                   Entries[MAX_ACE_COUNT];
+}HOOK_ACL;
+
 typedef struct _LOCAL_HOOK_INFO_* PLOCAL_HOOK_INFO;
 
 typedef struct _HOOK_TRACE_INFO_
 {
     PLOCAL_HOOK_INFO        Link;
 }HOOK_TRACE_INFO, *TRACED_HOOK_HANDLE;
+
+typedef struct _LOCAL_HOOK_INFO_
+{
+	PLOCAL_HOOK_INFO        Next;
+	ULONG					NativeSize;
+	UCHAR*					TargetProc;
+	ULONGLONG				TargetBackup;
+	ULONGLONG				TargetBackup_x64;
+	ULONGLONG				HookCopy;
+	ULONG					EntrySize;
+	UCHAR*					Trampoline;
+	ULONG					HLSIndex;
+	ULONG					HLSIdent;
+	void*					Callback;
+	HOOK_ACL				LocalACL;
+	ULONG                   Signature;
+	TRACED_HOOK_HANDLE      Tracking;
+
+	void*					RandomValue; // fixed
+	void*					HookIntro; // fixed
+	UCHAR*					OldProc; // fixed
+	UCHAR*					HookProc; // fixed
+	void*					HookOutro; // fixed
+	int*					IsExecutedPtr; // fixed
+}LOCAL_HOOK_INFO, *PLOCAL_HOOK_INFO;
 
 DRIVER_SHARED_API(NTSTATUS, RtlGetLastError());
 

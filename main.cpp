@@ -13,7 +13,8 @@
 
 // define ORIG_* variables
 #define HOOK_DEFINE(rettype, name, argtype) \
-	rettype (WINAPI * ORIG_##name) argtype;
+	rettype (WINAPI * ORIG_##name) argtype = ##name; \
+	rettype WINAPI IMPL_##name argtype; 
 #include "hooklist.h"
 #undef HOOK_DEFINE
 
@@ -70,6 +71,9 @@ int __stdcall DllMain(_In_ HINSTANCE hInstance, _In_ DWORD fdwReason, _In_ LPVOI
 	case DLL_PROCESS_ATTACH:
 	{
 		DisableThreadLibraryCalls(hInstance);
+#ifdef _DEBUG
+		MessageBox(NULL, L"WhichFont Start!", NULL, MB_OK);
+#endif
 		if (!GetModuleHandle(L"MacType.core.dll") && !GetModuleHandle(L"MacType.core64.dll")) {
 			hook_init();
 			bHookInited = true;
@@ -92,34 +96,43 @@ int __stdcall DllMain(_In_ HINSTANCE hInstance, _In_ DWORD fdwReason, _In_ LPVOI
 #pragma pack(1)
 typedef struct {
 	WCHAR FontWanted[LF_FACESIZE];
-	WCHAR FontCreated[LF_FACESIZE];
+	WCHAR StyleName[LF_FACESIZE];
 } FONTINFO, *PFONTINFO;
 #pragma pack(pop)
 
 HWND g_WndObserver = NULL;
 const int CDMagic = 0x12344321;
-void TellObserver(std::wstring szFontName, std::wstring szResult) {
+void TellObserver(std::wstring szFontName, std::wstring szStyle) {
 	if (!g_WndObserver) {
 		g_WndObserver = FindWindow(L"TWhichFontFather", NULL);
 	}
 	if (g_WndObserver) {
-		FONTINFO fonts = {0};
+		FONTINFO fonts = { 0 };
 		StringCchCopy(fonts.FontWanted, LF_FACESIZE, szFontName.c_str());
-		StringCchCopy(fonts.FontCreated, LF_FACESIZE, szResult.c_str());
+		StringCchCopy(fonts.StyleName, LF_FACESIZE, szStyle.c_str());
 		COPYDATASTRUCT cds = { CDMagic, sizeof FONTINFO, &fonts };
 		SendMessage(g_WndObserver, WM_COPYDATA, 0, (int)&cds);
 	}
 }
 
-HFONT WINAPI IMPL_CreateFontIndirectExW(CONST ENUMLOGFONTEXDV *penumlfex)
-{
-	HFONT ret = ORIG_CreateFontIndirectExW(penumlfex);
-	if (penumlfex && ret) {
-		std::wstring fname = penumlfex->elfEnumLogfontEx.elfLogFont.lfFaceName;
-		LOGFONT lf = { 0 };
-		GetObject(ret, sizeof(LOGFONT), &lf);	// get the font actually been created.
-		std::wstring fretname = lf.lfFaceName;
-		TellObserver(fname, fretname);
+BOOL WINAPI IMPL_ExtTextOutW(_In_ HDC hdc, _In_ int x, _In_ int y, _In_ UINT options, _In_opt_ CONST RECT * lprect, _In_reads_opt_(c) LPCWSTR lpString, _In_ UINT c, _In_reads_opt_(c) CONST INT * lpDx) {
+	if (c && lpString) {
+		// only check fonts for valid output
+		do {
+			int nSize = GetOutlineTextMetrics(hdc, 0, NULL);
+			if (!nSize) {
+				break;
+			}
+
+			OUTLINETEXTMETRIC* otm = (OUTLINETEXTMETRIC*)malloc(nSize);
+			memset(otm, 0, nSize);
+			otm->otmSize = nSize;
+			GetOutlineTextMetrics(hdc, nSize, otm);
+			std::wstring strFamilyName = (LPWSTR)((DWORD_PTR)otm + (DWORD_PTR)otm->otmpFamilyName);
+			std::wstring strStyleName = (LPWSTR)((DWORD_PTR)otm + (DWORD_PTR)otm->otmpStyleName);
+			free(otm);
+			TellObserver(strFamilyName, strStyleName);
+		} while (false);
 	}
-	return ret;
+	return ORIG_ExtTextOutW(hdc, x, y, options, lprect, lpString, c, lpDx);
 }

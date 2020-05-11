@@ -1,11 +1,6 @@
 program WFObserver;
 
 uses
-  madExcept,
-  madLinkDisAsm,
-  madListHardware,
-  madListProcesses,
-  madListModules,
   Forms,
   ufmMain in 'ufmMain.pas' {WhichFontFather};
 
