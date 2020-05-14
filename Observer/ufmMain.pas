@@ -33,7 +33,7 @@ type
 
   TFONTINFO = packed record
     FontWanted: array[0..LF_FACESIZE - 1] of Char;
-    FontCreated: array[0..LF_FACESIZE - 1] of Char;
+    FontStyle: array[0..LF_FACESIZE - 1] of Char;
   end;
 
   PFontInfo = ^TFONTINFO;
@@ -48,6 +48,7 @@ implementation
 procedure ProcWaiter(PHandle: THandle);
 begin
   WaitForSingleObject(PHandle, INFINITE);
+  CloseHandle(PHandle);
   PostMessage(WhichFontFather.Handle, CM_PROCEND, 0, 0);
 end;
 
@@ -55,7 +56,7 @@ function RemoteInjectTo(const Guest, AlterGuest: WideString; const procHandle: T
   DWORD; var thrdHandle: Thandle): DWORD;
 // 远程注入函数
 type
-  lpparam = packed record
+  lpparam = record
     LibFileName: Pointer;
     LibAlterFileName: Pointer;
     hfile: Thandle;
@@ -78,7 +79,8 @@ var
   { 写入到远程进程后的地址 }
   pszLibMem: Pointer;
   iReturnCode: Boolean;
-  TempVar: DWORD;
+  TempVar: SIZE_T;
+  TempDWORD: Cardinal;
 
   { 指向函数LoadLibraryW的地址 }
   pfnStartAddr: TFNThreadStartRoutine;
@@ -88,12 +90,16 @@ var
   pszLibAAlterFileName: PWideChar;
   lpLibParam: lpparam;
 
-  function loader(param: plpparam): HMODULE; stdcall;
+  // Delphi always assume the thread param is in RCX while in CreateRemoteThread, it's in R8
+  // Adding an extra useless variable tricks delphi to use R8 as its parameter source
+  // Stack balance is not important as we will call ExitThread to terminate our thread without returns
+
+  function loader({$IFDEF WIN64}dumy: NativeUInt; {$ENDIF}param: plpparam): HMODULE; stdcall;
   begin
-    Result := TLoadLibEx(param.func)(param.LibFileName, 0, LOAD_WITH_ALTERED_SEARCH_PATH);
+    Result := TLoadLibEx(param^.func)(param^.LibFileName, 0, LOAD_WITH_ALTERED_SEARCH_PATH);
     if Result = 0 then
-      TLoadLibEx(param.func)(param.LibAlterFileName, 0, 0);
-    TExitThread(param.exitthread)(Result);
+      TLoadLibEx(param^.func)(param^.LibAlterFileName, 0, 0);
+    TExitThread(param^.exitthread)(Result);
   end;
 
 begin
@@ -119,15 +125,15 @@ begin
     Result := 0;
     Exit;
   end;
-  lpLibParam.LibFileName := Pointer(Integer(pszLibMem) + SizeOf(lpLibParam));
-  lpLibParam.LibAlterFileName := Pointer(Integer(pszLibMem) + SizeOf(lpLibParam) + (Length(Guest) + 1) * SizeOf(WChar));
+  lpLibParam.LibFileName := Pointer(NativeUInt(pszLibMem) + SizeOf(lpLibParam));
+  lpLibParam.LibAlterFileName := Pointer(NativeUInt(pszLibMem) + SizeOf(lpLibParam) + (Length(Guest) + 1) * SizeOf(WChar));
   lpLibParam.hfile := 0;
   lpLibParam.dwFlag := LOAD_WITH_ALTERED_SEARCH_PATH;
   lpLibParam.func := GetProcAddress(GetModuleHandle('Kernel32'), 'LoadLibraryExW');
   lpLibParam.exitthread := GetProcAddress(GetModuleHandle('Kernel32'), 'ExitThread');
   TempVar := 0;
   WriteProcessMemory(procHandle, pszLibMem, @lpLibParam, SizeOf(lpLibParam), TempVar);
-  WriteProcessMemory(procHandle, Pointer(Integer(pszLibMem) + memSize - 100), @loader, 100, TempVar);
+  WriteProcessMemory(procHandle, Pointer(NativeUInt(pszLibMem) + memSize - 100), @loader, 100, TempVar);
 
   iReturnCode := WriteProcessMemory(procHandle, lpLibParam.LibFileName, pszLibAFilename, (1 + lstrlenW(pszLibAFilename)) * SizeOf(WChar), TempVar);
   if iReturnCode then
@@ -137,7 +143,7 @@ begin
   begin
     TempVar := 0;
     { 在远程进程中启动dll }
-    thrdHandle := CreateRemoteThread(procHandle, nil, 0, Pointer(Integer(pszLibMem) + memSize - 100), pszLibMem, 0, TempVar);
+    thrdHandle := CreateRemoteThread(procHandle, nil, 0, Pointer(NativeUInt(pszLibMem) + memSize - 100), pszLibMem, 0, TempDWORD);
     if thrdHandle = 0 then
     begin
       VirtualFreeEx(procHandle, pszLibMem, memSize, MEM_DECOMMIT or MEM_RELEASE);
@@ -207,8 +213,18 @@ begin
 end;
 
 procedure TWhichFontFather.btn1Click(Sender: TObject);
+const
+{$IFDEF WIN64}
+  MACTYPE_DLL = 'MacType64.dll';
+  MACTYPE_CORE_DLL = 'MacType64.Core.dll';
+  WHICHFONT_DLL = 'WhichFont64.dll';
+{$ELSE}
+  MACTYPE_DLL = 'MacType.dll';
+  MACTYPE_CORE_DLL = 'MacType.Core.dll';
+  WHICHFONT_DLL = 'WhichFont.dll';
+{$ENDIF}
 begin
-  if GetModuleHandle('MacType.dll') + GetModuleHandle('MacType.Core.dll') <> 0 then
+  if GetModuleHandle(MACTYPE_DLL) + GetModuleHandle(MACTYPE_CORE_DLL) <> 0 then
   begin
     MessageBox(Handle, 'Please turn off MacType before start tracing', 'Warning', MB_OK or MB_ICONWARNING);
     exit;
@@ -222,7 +238,7 @@ begin
       lvFonts.Clear;
       FFontCache.Clear;
       pnl1.Hide;
-      LaunchAndHook(FileName, ExtractFilePath(ParamStr(0)) + 'WhichFont.dll');
+      LaunchAndHook(FileName, ExtractFilePath(ParamStr(0)) + WHICHFONT_DLL);
       btn1.Hide;
     end;
   finally
@@ -240,7 +256,9 @@ procedure TWhichFontFather.LaunchAndHook(szExe, szDll: string);
 var
   si: TStartupInfo;
   pi: TProcessInformation;
-  dumy: THandle;
+  dumy: DWORD;
+  dumyHandle: THandle;
+  bWow64Proc: BOOL;
 begin
   if not FileExists(szDll) then
   begin
@@ -252,10 +270,35 @@ begin
   si.wShowWindow := SW_SHOW;
   if CreateProcess(nil, PChar(szExe), nil, nil, False, CREATE_SUSPENDED, nil, nil, si, pi) then
   begin
-    CloseHandle(BeginThread(nil, 0, @ProcWaiter, Pointer(pi.hProcess), 0, dumy));
-    RemoteInjectTo(szDll, '', pi.hProcess, False, 5000, dumy);
-    ResumeThread(pi.hThread);
-    CloseHandle(pi.hThread);
+  {$IFDEF WIN64}
+    if IsWow64Process(pi.hProcess, @bWow64Proc) and bWow64Proc then
+    begin
+      lvFonts.AddItem('---- Use WhichFont.exe for x86 processes ----', nil);
+      ResumeThread(pi.hThread);
+      CloseHandle(pi.hThread);
+      CloseHandle(pi.hProcess);
+      pnl1.Show;
+      Exit;
+    end;
+  {$ELSE}
+    if IsWow64Process(GetCurrentProcess(), bWow64Proc) and bWow64Proc then // ourself is running in a x64 platform
+      if IsWow64Process(pi.hProcess, @bWow64Proc) and (not bWow64Proc) then
+      begin
+        lvFonts.AddItem('---- Use WhichFont64.exe for x64 processes ----', nil);
+        ResumeThread(pi.hThread);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        pnl1.Show;
+        Exit;
+      end;
+  {$ENDIF}
+
+    begin
+      CloseHandle(BeginThread(nil, 0, @ProcWaiter, Pointer(pi.hProcess), 0, dumy));
+      RemoteInjectTo(szDll, '', pi.hProcess, False, 5000, dumyHandle);
+      ResumeThread(pi.hThread);
+      CloseHandle(pi.hThread);
+    end;
   end;
 end;
 
@@ -264,7 +307,7 @@ begin
   if (Msg.CopyDataStruct.dwData = $12344321) and (Msg.CopyDataStruct.lpData <> nil) then // check magic word
   begin
     with PFontInfo(Msg.CopyDataStruct.lpData)^ do
-      AddOrUpdateFont(Format('%s %s', [FontWanted, FontCreated]));
+      AddOrUpdateFont(Format('%s [%s]', [FontWanted, FontStyle]));
   end;
 end;
 

@@ -35,10 +35,6 @@ object WhichFontFather: TWhichFontFather
     ShowColumnHeaders = False
     TabOrder = 0
     ViewStyle = vsReport
-    ExplicitLeft = 128
-    ExplicitTop = 176
-    ExplicitWidth = 250
-    ExplicitHeight = 150
   end
   object btn1: TButton
     Left = 72
@@ -71,7 +67,7 @@ object WhichFontFather: TWhichFontFather
       34)
     object btn2: TButton
       Left = 72
-      Top = 1
+      Top = 2
       Width = 184
       Height = 30
       Anchors = []
